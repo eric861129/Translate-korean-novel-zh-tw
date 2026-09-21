@@ -1,0 +1,25 @@
+# 公開 Repo 只收技能與入口文件。小說和工作進度請放在別的本機資料夾。
+/*
+!/.gitignore
+!/README.md
+!/translate-korean-novel-zh-tw/
+
+/translate-korean-novel-zh-tw/*
+!/translate-korean-novel-zh-tw/SKILL.md
+!/translate-korean-novel-zh-tw/agents/
+!/translate-korean-novel-zh-tw/references/
+!/translate-korean-novel-zh-tw/scripts/
+
+**/__pycache__/
+*.py[cod]
+**/translation-work/
+*.txt
+*.jsonl
+*.zip
+*.epub
+*.pdf
+*.docx
+*.doc
+*.log
+.env
+.env.*

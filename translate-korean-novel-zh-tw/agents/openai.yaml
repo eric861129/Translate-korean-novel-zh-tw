@@ -1,0 +1,4 @@
+interface:
+  display_name: "韓文小說分批繁中重譯"
+  short_description: "確認原稿與人工初翻版，備妥約十批計畫，再以 Goal 完成全書翻譯與唯一最終版。"
+  default_prompt: "請使用 $translate-korean-novel-zh-tw，第一步確認小說的韓文原稿與人工初翻版，第二步建立 translation-work 必要檔案，依原文字數及完整章節規劃約十個交付批次並保存續譯位置與唯一最終輸出路徑。工作檔與計畫確認完整後，請建立或沿用本書 Goal，逐批翻譯、校對及保存，直到全書驗收、組裝成唯一繁體中文 TXT 並讀回確認；對話段落之間保留空白行，不在每批完成後等待我說繼續。"
