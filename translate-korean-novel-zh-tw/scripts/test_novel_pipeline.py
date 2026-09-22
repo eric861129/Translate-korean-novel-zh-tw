@@ -346,6 +346,34 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(pipeline.PipelineError, "全書複核尚未記錄"):
             pipeline.assemble_book(argparse.Namespace(work=str(self.work), output=str(self.root / "完整版.txt")))
 
+    def test_assembly_spaces_every_content_line_without_changing_reviewed_sections(self):
+        sections = {
+            "s0000": "序章\r\n我推開了門。\r\n裡面一個人也沒有。\r\n",
+            "s0001": "\n第1章 約定（1）\n\n\n木真說道：\n \t\n\n「我明天會回來。」\n\n\n",
+            "s0002": "第1章 約定（2）\n木真回來了。",
+        }
+        for identity, content in sections.items():
+            path = self.work / "sections" / f"{identity}.txt"
+            path.write_bytes(content.encode("utf-8"))
+            mapping = pipeline.load_json(self.map_path(identity))
+            body_lines = [i for i, line in enumerate(content.splitlines(), 1) if line.strip()][1:]
+            for alignment, line in zip(mapping["alignments"], body_lines):
+                alignment["target_lines"] = [line, line]
+            mapping["translation_sha256"] = pipeline.digest(path.read_bytes())
+            write_json(self.map_path(identity), mapping)
+        self.record_all()
+        self.attest()
+        before = {path: path.read_bytes() for path in (self.work / "sections").iterdir() if path.is_file()}
+        output = self.root / "完整版.txt"
+        result = pipeline.assemble_book(argparse.Namespace(work=str(self.work), output=str(output)))
+        expected = ("━━━━━━━━━━━━━━━━\n\n序章\n\n━━━━━━━━━━━━━━━━\n\n我推開了門。\n\n裡面一個人也沒有。\n\n"
+                    "━━━━━━━━━━━━━━━━\n\n第1章 約定（1）\n\n━━━━━━━━━━━━━━━━\n\n木真說道：\n\n「我明天會回來。」\n\n"
+                    "第1章 約定（2）\n\n木真回來了。\n")
+        self.assertEqual(output.read_bytes(), expected.encode("utf-8"))
+        self.assertEqual(result["sha256"], pipeline.digest(output.read_bytes()))
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(self.report()["errors"], [])
+
     def test_whole_book_average_must_also_reach_85(self):
         self.record_all()
         state = pipeline.book_state(pipeline.load_project(self.work))
@@ -353,6 +381,58 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(pipeline.PipelineError, "未達 85"):
             pipeline.attest_book(argparse.Namespace(work=str(self.work)))
         self.assertFalse((self.work / "book-receipt.json").exists())
+
+
+class FinalTextLayoutTests(unittest.TestCase):
+    def test_chapter_frames_follow_manifest_and_preserve_same_chapter_parts(self):
+        sections = [
+            {"id": "s0000", "heading": {"kind": "preamble", "chapter": None}},
+            {"id": "s0001", "heading": {"kind": "special", "chapter": None}},
+            {"id": "s0002", "heading": {"kind": "chapter", "chapter": "01", "part": "1"}},
+            {"id": "s0003", "heading": {"kind": "chapter", "chapter": "1", "part": "2"}},
+            {"id": "s0004", "heading": {"kind": "preamble", "chapter": None}},
+            {"id": "s0005", "heading": {"kind": "chapter", "chapter": "1", "part": "3"}},
+            {"id": "s0006", "heading": {"kind": "chapter", "chapter": "2", "part": None}},
+            {"id": "s0007", "heading": {"kind": "special", "chapter": None}},
+        ]
+        pieces = [" \n", "序章\n序文。", "第1章 門（1）\r\n「第9章還沒開始。」",
+                  "第1章 門（2）\n＊＊＊\n第二段。", "\n\t", "第1章 門（3）\n第三段。",
+                  "第2章 路\n下一章。", "後記\n後記正文。"]
+        expected = ("━━━━━━━━━━━━━━━━\n\n序章\n\n━━━━━━━━━━━━━━━━\n\n序文。\n\n"
+                    "━━━━━━━━━━━━━━━━\n\n第1章 門（1）\n\n━━━━━━━━━━━━━━━━\n\n「第9章還沒開始。」\n\n"
+                    "第1章 門（2）\n\n第二段。\n\n第1章 門（3）\n\n第三段。\n\n"
+                    "━━━━━━━━━━━━━━━━\n\n第2章 路\n\n━━━━━━━━━━━━━━━━\n\n下一章。\n\n"
+                    "━━━━━━━━━━━━━━━━\n\n後記\n\n━━━━━━━━━━━━━━━━\n\n後記正文。\n")
+        self.assertEqual(pipeline.render_final_book(pieces, sections), expected)
+
+    def test_final_book_removes_standalone_scene_stars_without_replacing_them(self):
+        pieces = ["第1章 門\n第一段。\n★ ★ ★\n＊＊＊\n* * *\n☆　☆　☆\n……\n「紙上寫著＊＊＊。」\n第二段。"]
+        sections = [{"id": "s0001", "heading": {"chapter": "1"}}]
+        expected = ("━━━━━━━━━━━━━━━━\n\n第1章 門\n\n━━━━━━━━━━━━━━━━\n\n"
+                    "第一段。\n\n……\n\n「紙上寫著＊＊＊。」\n\n第二段。\n")
+        self.assertEqual(pipeline.render_final_book(pieces, sections), expected)
+
+    def test_chapter_rendering_rejects_missing_section_metadata(self):
+        for pieces, sections in [(["序章\n正文。"], []), ([], [{"id": "s0000"}])]:
+            with self.subTest(pieces=pieces), self.assertRaisesRegex(pipeline.PipelineError, "分節數量"):
+                pipeline.render_final_book(pieces, sections)
+
+    def test_spacing_preserves_content_and_is_idempotent(self):
+        cases = [
+            (["標題\n第一行\n第二行"], "標題\n\n第一行\n\n第二行\n"),
+            (["\n甲\n\n\n\t \n乙\n\n"], "甲\n\n乙\n"),
+            (["甲\r\n乙\r丙"], "甲\n\n乙\n\n丙\n"),
+            (["甲\n\n", "", " \t\n", "\n乙"], "甲\n\n乙\n"),
+            (["　詩行甲  \n詩行乙\n＊＊＊\n「對話。」"], "　詩行甲  \n\n詩行乙\n\n＊＊＊\n\n「對話。」\n"),
+            (["甲\u2028乙"], "甲\u2028乙\n"),
+            (["\r\n \t\n", ""], ""),
+            ([], ""),
+        ]
+        for pieces, expected in cases:
+            with self.subTest(pieces=pieces):
+                actual = pipeline.render_final_text(pieces)
+                self.assertEqual(actual, expected)
+                self.assertEqual(pipeline.render_final_text([actual]), actual)
 
 
 class BatchPlanningTests(unittest.TestCase):

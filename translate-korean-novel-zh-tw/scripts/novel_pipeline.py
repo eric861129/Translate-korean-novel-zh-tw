@@ -717,6 +717,36 @@ def attest_book(args):
     return {"book_review_recorded": True, "kind": "agent_attestation", "average_score": score["average"]}
 
 
+def render_final_text(pieces):
+    """依分節順序輸出手機閱讀版，保留非空行原文並統一為一個空白行。"""
+    lines = [line for piece in pieces
+             for line in piece.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+             if line.strip()]
+    return "\n\n".join(lines) + "\n" if lines else ""
+
+
+def render_final_book(pieces, sections):
+    """交付版移除獨立場景星號並依原稿索引為章名加框，不回寫分節。"""
+    require(len(pieces) == len(sections), "交付譯文與索引的分節數量不一致。")
+    framed_pieces, previous_chapter = [], None
+    border = "━━━━━━━━━━━━━━━━"
+    for piece, section in zip(pieces, sections):
+        formatted = render_final_text([piece])
+        if not formatted:
+            continue
+        title, _, body = formatted.partition("\n")
+        body = "\n".join(line for line in body.split("\n")
+                         if "".join(line.split()) not in {"★★★", "☆☆☆", "***", "＊＊＊"})
+        formatted = f"{title}\n{body}"
+        chapter = section["heading"]["chapter"]
+        chapter_key = ("chapter", int(chapter)) if chapter is not None else ("special", section["id"])
+        if chapter_key != previous_chapter:
+            formatted = f"{border}\n{title}\n{border}\n{body}"
+        framed_pieces.append(formatted)
+        previous_chapter = chapter_key
+    return render_final_text(framed_pieces)
+
+
 def assemble_book(args):
     work = Path(args.work).resolve()
     with writer_lock(work):
@@ -730,15 +760,15 @@ def assemble_book(args):
         inputs = {Path(project[1][key]["path"]).resolve() for key in ("source", "reference")}
         require(output not in inputs and not output.is_relative_to(work), "交付檔不得覆蓋輸入，或放進工作狀態目錄。")
         require(not output.exists(), "交付檔已存在；請指定新的明確檔名，工具不覆寫既有版本。")
-        pieces = [artifact_path(work, s["id"], ".txt").read_text(encoding="utf-8").strip() for s in project[1]["sections"]]
-        text = "\n\n\n".join(piece for piece in pieces if piece) + "\n"
+        pieces = [artifact_path(work, s["id"], ".txt").read_text(encoding="utf-8") for s in project[1]["sections"]]
+        text = render_final_book(pieces, project[1]["sections"])
         require(text.strip(), "沒有可交付的正文。")
         # 組裝前再查一次，避免編輯中的工作檔混入輸出。
         require(book_state(load_project(work)) == state, "組裝期間工作資料改變，請重試驗收。")
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(text)
         require(output.read_bytes() == text.encode("utf-8"), "組裝讀回不一致，請檢查交付檔。")
-    return {"output": str(output), "sha256": digest(output.read_bytes()), "sections": len(pieces), "nonempty_sections": sum(bool(p) for p in pieces), "average_score": score["average"], "scope": "全部提供原稿，依代理校對聲明及機械檢查組裝"}
+    return {"output": str(output), "sha256": digest(output.read_bytes()), "sections": len(pieces), "nonempty_sections": sum(bool(p.strip()) for p in pieces), "average_score": score["average"], "scope": "全部提供原稿，依代理校對聲明及機械檢查組裝"}
 
 
 def cli(argv=None):

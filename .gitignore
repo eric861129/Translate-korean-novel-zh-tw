@@ -23,3 +23,8 @@
 *.log
 .env
 .env.*
+
+# 僅放行自造的固定排版範例；其餘 TXT 仍忽略。
+!/translate-korean-novel-zh-tw/assets/
+/translate-korean-novel-zh-tw/assets/*
+!/translate-korean-novel-zh-tw/assets/final-layout-example.txt
