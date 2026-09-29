@@ -161,6 +161,30 @@ def clean_heading(line):
     return re.sub(r"\s*\(오류 수정\)\s*$", "", line).strip()
 
 
+def source_part(section):
+    """原索引未解析分節尾號時，從原始標題取回其明示編號。"""
+    part = section.get("heading", {}).get("part")
+    if part:
+        return part
+    source_heading = clean_heading(section.get("source_heading") or "")
+    match = re.search(r"\s+\((?P<part>\d+|完)\)$", source_heading)
+    return match.group("part") if match else None
+
+
+def chinese_heading_prefix(heading):
+    """依原稿章節類型產生繁中標頭前綴，保留正篇與番外的區別。"""
+    chapter = heading.get("chapter")
+    if chapter is None:
+        return None
+    if heading.get("kind") == "외전":
+        return f"外傳第{int(chapter)}話　"
+    return f"第{int(chapter)}章 "
+
+
+def is_chapter_title_line(line):
+    return bool(re.match(r"^(?:第\d+章 |外傳第\d+話　).+", line))
+
+
 def parse_heading(line, pattern=None):
     cleaned = clean_heading(line)
     if re.search(r"\s+끝$", cleaned):
@@ -601,12 +625,13 @@ def check_section(project, section, *, artifact=None, chunk=False):
     else:
         require(isinstance(title, str) and title.strip() and nonempty and lines[nonempty[0] - 1] == title, "譯文第一個非空行必須等於已核對的 title_zh。")
         heading = section["heading"]
-        if heading["chapter"] is not None:
-            prefix = f"第{int(heading['chapter'])}章 "
-            suffix = f"（{heading['part']}）" if heading["part"] else ""
+        prefix = chinese_heading_prefix(heading)
+        if prefix is not None:
+            part = source_part(section)
+            suffix = f"（{part}）" if part else ""
             require(title.startswith(prefix) and (not suffix or title.endswith(suffix)) and len(title) > len(prefix + suffix), "中文章號、分節號或標題不符合原稿。")
         body = set(nonempty[1:])
-        require(not any(re.match(r"^第\d+章 .+", lines[i - 1]) or lines[i - 1] == title for i in body), "正文內出現額外章節標頭，請核對重複或串節。")
+        require(not any(is_chapter_title_line(lines[i - 1]) or lines[i - 1] == title for i in body), "正文內出現額外章節標頭，請核對重複或串節。")
     expected = {block["id"] for block in section["blocks"]}
     covered = []
     target_covered = []
@@ -645,10 +670,89 @@ def check_section(project, section, *, artifact=None, chunk=False):
     require(isinstance(declared, list) and all(isinstance(t, str) for t in declared), "需明列本節 term_ids，無專名時填空清單。")
     require(len(declared) == len(set(declared)) and set(declared).issubset(available) and detected.issubset(declared), "本節專名依賴缺漏、重複或超出適用範圍。")
     dependencies = {key: digest(canonical(available[key])) for key in sorted(declared)}
+    source_by_id = {block["id"]: block["text"] for block in section["blocks"]}
+
+    def contains_source_alias(aliases, source_span):
+        for alias in aliases:
+            offset = 0
+            while True:
+                position = source_span.find(alias, offset)
+                if position < 0:
+                    break
+                suffix_start = position + len(alias)
+                if suffix_start < len(source_span) and source_span[suffix_start] == "(":
+                    closing = source_span.find(")", suffix_start + 1)
+                    if closing >= 0:
+                        qualified_alias = source_span[position:closing + 1]
+                        if qualified_alias not in aliases:
+                            offset = position + 1
+                            continue
+                return True
+        return False
+
+    for entry in entries:
+        resolutions = entry.get("term_resolutions", [])
+        require(isinstance(resolutions, list), "詞條消歧資料必須是清單。")
+        if not resolutions:
+            continue
+        require(entry.get("disposition") == "translated", "排除來源不可附加詞條消歧。")
+        target_span = entry.get("target_lines")
+        source_span = "\n".join(source_by_id[source_id] for source_id in entry["source_ids"])
+        for resolution in resolutions:
+            require(isinstance(resolution, dict), "詞條消歧資料必須是物件。")
+            term_id = resolution.get("term_id")
+            forbidden = resolution.get("forbidden_zh")
+            alternate_id = resolution.get("resolves_as")
+            resolved_span = resolution.get("target_lines")
+            require(term_id in declared and alternate_id in declared and term_id != alternate_id,
+                    "詞條消歧必須引用本節已聲明的兩個不同詞條。")
+            term, alternate = available[term_id], available[alternate_id]
+            require(forbidden in term.get("forbidden_zh", []) and alternate.get("decision") == "adopted"
+                    and alternate.get("zh") == forbidden, "詞條消歧必須對應禁名及已核定的替代詞條。")
+            require(isinstance(resolution.get("reason"), str) and resolution["reason"].strip(),
+                    "詞條消歧必須記錄實際判定理由。")
+            require(isinstance(resolved_span, list) and len(resolved_span) == 2
+                    and all(type(number) is int for number in resolved_span)
+                    and resolved_span[0] == resolved_span[1]
+                    and target_span[0] <= resolved_span[0] <= target_span[1]
+                    and forbidden in lines[resolved_span[0] - 1], "詞條消歧必須精確對應含禁名的譯文行。")
+            require(contains_source_alias(term.get("ko", []), source_span)
+                    and contains_source_alias(alternate.get("ko", []), source_span),
+                    "消歧依據與原文詞形不符。")
+
+    def mapped_to_other_adopted_name(key, forbidden, line_number):
+        term = available[key]
+        own_aliases = term.get("ko", [])
+        source_spans = []
+        for entry in entries:
+            span = entry.get("target_lines")
+            if entry.get("disposition") == "translated" and span and span[0] <= line_number <= span[1]:
+                if any(resolution.get("term_id") == key and resolution.get("forbidden_zh") == forbidden
+                       and resolution.get("target_lines") == [line_number, line_number]
+                       for resolution in entry.get("term_resolutions", [])):
+                    return True
+                source_spans.append("\n".join(source_by_id[source_id] for source_id in entry["source_ids"]))
+        if not chunk and line_number == 1 and title and lines[0] == title:
+            source_spans.append(section.get("source_heading") or "")
+        for source_span in source_spans:
+            if contains_source_alias(own_aliases, source_span):
+                continue
+            for other_key in declared:
+                if other_key == key:
+                    continue
+                other = available[other_key]
+                if (other.get("decision") == "adopted" and other.get("zh") == forbidden and
+                        contains_source_alias(other.get("ko", []), source_span)):
+                    return True
+        return False
+
     for key in declared:
         term = available[key]
         require(term["decision"] == "adopted", f"{key} 的譯名尚未決定。")
-        require(not any(bad in text for bad in term.get("forbidden_zh", [])), f"{key} 出現本節禁用的譯名。")
+        for line_number, line in enumerate(lines, start=1):
+            for bad in term.get("forbidden_zh", []):
+                if bad in line:
+                    require(mapped_to_other_adopted_name(key, bad, line_number), f"{key} 出現本節禁用的譯名。")
     ordinal = {s["id"]: s["ordinal"] for s in manifest["sections"]}
     relevant_context = sorted((c for c in continuity if ordinal[c["section_id"]] <= section["ordinal"]), key=lambda c: ordinal[c["section_id"]])
     require(chunk or any(c["section_id"] == identity for c in relevant_context), "缺少本節敘事狀態；全數排除的前置文字也需說明。")
@@ -667,10 +771,11 @@ def validate_project(project, *, verification=None, stop_at_first=False, style=N
             mapping = load_json(artifact_path(project[0], section["id"], ".map.json"))
             heading = section["heading"]
             if heading["chapter"] is not None:
-                key = (heading["chapter"], heading["title"])
-                title = mapping["title_zh"].removeprefix(f"第{int(heading['chapter'])}章 ")
-                if heading["part"]:
-                    title = title.removesuffix(f"（{heading['part']}）")
+                key = (heading.get("kind"), heading["chapter"], heading["title"])
+                title = mapping["title_zh"].removeprefix(chinese_heading_prefix(heading))
+                part = source_part(section)
+                if part:
+                    title = title.removesuffix(f"（{part}）")
                 require(key not in titles or titles[key] == title, "同一原稿章名在不同分節中譯名不一致。")
                 titles[key] = title
             verified.append(section["id"])
@@ -738,8 +843,9 @@ def render_final_book(pieces, sections):
         body = "\n".join(line for line in body.split("\n")
                          if "".join(line.split()) not in {"★★★", "☆☆☆", "***", "＊＊＊"})
         formatted = f"{title}\n{body}"
-        chapter = section["heading"]["chapter"]
-        chapter_key = ("chapter", int(chapter)) if chapter is not None else ("special", section["id"])
+        heading = section["heading"]
+        chapter = heading["chapter"]
+        chapter_key = (heading.get("kind") or "chapter", int(chapter)) if chapter is not None else ("special", section["id"])
         if chapter_key != previous_chapter:
             formatted = f"{border}\n{title}\n{border}\n{body}"
         framed_pieces.append(formatted)

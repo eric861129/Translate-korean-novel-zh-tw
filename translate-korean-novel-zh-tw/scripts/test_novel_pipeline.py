@@ -250,6 +250,17 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(pipeline.PipelineError, "中文章號"):
             self.record("s0001")
 
+    def test_external_chapter_uses_bonus_title_format(self):
+        project = pipeline.load_project(self.work)
+        section = next(item for item in project[1]["sections"] if item["id"] == "s0001")
+        section["heading"]["kind"] = "외전"
+
+        title = "外傳第1話　約定（1）"
+        text = (self.work / "sections/s0001.txt").read_text(encoding="utf-8")
+        self.update_translation(text.replace("第1章 約定（1）", title, 1))
+        self.change_map(lambda mapping: mapping.update(title_zh=title))
+        pipeline.check_section(project, section)
+
     def test_modified_mapping_requires_record_again(self):
         self.record_all()
         self.change_map(lambda m: m["reviews"]["fluency"].update(note="合成測試更新紀錄。"))
@@ -403,6 +414,24 @@ class FinalTextLayoutTests(unittest.TestCase):
                     "第1章 門（2）\n\n第二段。\n\n第1章 門（3）\n\n第三段。\n\n"
                     "━━━━━━━━━━━━━━━━\n\n第2章 路\n\n━━━━━━━━━━━━━━━━\n\n下一章。\n\n"
                     "━━━━━━━━━━━━━━━━\n\n後記\n\n━━━━━━━━━━━━━━━━\n\n後記正文。\n")
+        self.assertEqual(pipeline.render_final_book(pieces, sections), expected)
+
+    def test_bonus_chapter_starts_its_own_frame(self):
+        sections = [
+            {"id": "s0001", "heading": {"kind": "chapter", "chapter": "1", "part": None}},
+            {"id": "s0002", "heading": {"kind": "외전", "chapter": "1", "part": "1"}},
+            {"id": "s0003", "heading": {"kind": "외전", "chapter": "1", "part": "2"}},
+        ]
+        pieces = [
+            "第1章 門\n正篇。",
+            "外傳第1話　門（1）\n番外第一節。",
+            "外傳第1話　門（2）\n番外第二節。",
+        ]
+        expected = (
+            "━━━━━━━━━━━━━━━━\n\n第1章 門\n\n━━━━━━━━━━━━━━━━\n\n正篇。\n\n"
+            "━━━━━━━━━━━━━━━━\n\n外傳第1話　門（1）\n\n━━━━━━━━━━━━━━━━\n\n番外第一節。\n\n"
+            "外傳第1話　門（2）\n\n番外第二節。\n"
+        )
         self.assertEqual(pipeline.render_final_book(pieces, sections), expected)
 
     def test_final_book_removes_standalone_scene_stars_without_replacing_them(self):

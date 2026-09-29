@@ -289,7 +289,20 @@ class Workflow:
                 lines.append("")
             start = len(lines) + 1
             lines.extend(text.split("\n"))
-            alignments.append({"source_ids": ids, "disposition": "translated", "target_lines": [start, len(lines)]})
+            alignment = {"source_ids": ids, "disposition": "translated", "target_lines": [start, len(lines)]}
+            term_resolutions = unit.get("term_resolutions", [])
+            c.require(isinstance(term_resolutions, list), "term_resolutions 必須是清單。")
+            resolved_lines = []
+            for resolution in term_resolutions:
+                c.require(isinstance(resolution, dict) and all(isinstance(resolution.get(key), str) and resolution[key].strip()
+                          for key in ("term_id", "forbidden_zh", "resolves_as", "reason")),
+                          "詞條消歧需填寫禁名、替代詞條及理由。")
+                matches = [i for i in range(start, len(lines) + 1) if resolution["forbidden_zh"] in lines[i - 1]]
+                c.require(matches, "詞條消歧指定的禁名未出現在該翻譯單位。")
+                resolved_lines.extend({**resolution, "target_lines": [i, i]} for i in matches)
+            if resolved_lines:
+                alignment["term_resolutions"] = resolved_lines
+            alignments.append(alignment)
             for allowance in unit.get("language_allowances", []):
                 c.require(isinstance(allowance.get("text"), str) and allowance["text"] and allowance.get("reason"), "用語例外缺少文字或依據。")
                 matches = [i for i in range(start, len(lines) + 1) if allowance["text"] in lines[i - 1]]
@@ -378,6 +391,9 @@ class Workflow:
                 row = deepcopy(entry)
                 if "target_lines" in row:
                     row["target_lines"] = [n + offset for n in row["target_lines"]]
+                for resolution in row.get("term_resolutions", []):
+                    if "target_lines" in resolution:
+                        resolution["target_lines"] = [n + offset for n in resolution["target_lines"]]
                 alignments.append(row)
             for entry in mapping.get("language_allowances", []):
                 allowances.append({**entry, "target_lines": [n + offset for n in entry["target_lines"]]})

@@ -123,6 +123,144 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(mapping["term_ids"], ["person-001"])
         self.assertEqual(mapping["term_dependencies"]["person-001"], core.digest(core.canonical(self.terms[0])))
 
+    def creature_name_submission(self, *, wrong_yual_name=False):
+        root = self.root / "creature-name-collision"
+        root.mkdir()
+        source = root / "韓文.txt"
+        reference = root / "人工版.txt"
+        source.write_text("<1화 이명 테스트 (1)>\n유알이 말했다.\n\n알유가 말했다.\n", encoding="utf-8")
+        reference.write_text("幽頞、猰貐。", encoding="utf-8")
+        work = root / "translation-work"
+        core.init_project(argparse.Namespace(source=source, reference=reference, work=work, title="異名測試",
+                                             source_encoding="auto", reference_encoding="auto", heading_pattern=None,
+                                             source_layout="inline"))
+        manifest = core.load_json(work / "manifest.json")
+        plan = core.build_batch_plan(manifest["sections"], manifest["source"]["sha256"],
+                                     target_chars=100, max_chars=6000, batch_chars=6000)
+        write_json(work / "batch-plan.json", plan)
+        terms = [
+            {"id": "creature-yual", "ko": ["유알"], "zh": "幽頞", "category": "creature",
+             "origin": "author_created", "decision": "adopted", "basis": "human_reference",
+             "evidence": ["人工版專名對照"], "forbidden_zh": ["猰貐"]},
+            {"id": "creature-aryu", "ko": ["알유"], "zh": "猰貐", "category": "creature",
+             "origin": "author_created", "decision": "adopted", "basis": "human_reference",
+             "evidence": ["人工版專名對照"], "forbidden_zh": []},
+        ]
+        write_rows(work / "terminology.jsonl", terms)
+        write_rows(work / "continuity.jsonl", [
+            {"section_id": section["id"], "summary": "異名碰撞合成測試。", "facts": []}
+            for section in manifest["sections"]
+        ])
+        flow = chunk_workflow.Workflow(core, work)
+        chunks = flow.section_chunks(manifest["sections"][0]["id"])
+        self.assertEqual(len(chunks), 1)
+        chunk = chunks[0]
+        units = []
+        for block in flow.views[chunk]["blocks"]:
+            if "유알" in block["text"]:
+                translated = "猰貐說道：" if wrong_yual_name else "幽頞說道："
+            else:
+                translated = "猰貐說道："
+            units.append({"source_ids": [block["id"]], "text": translated})
+        data = {"units": units, "reviews": synthetic_reviews(core.STAGES),
+                "state_after": {"viewpoint": "全知視角", "time_place": "合成場景", "speakers": [],
+                                "known_facts": [], "open_threads": []}}
+        input_path = root / "submit.json"
+        write_json(input_path, data)
+        result = chunk_workflow.run(core, argparse.Namespace(command="submit-chunk", work=work, chunk=chunk,
+                                   input=input_path, merge=False, title=None, replace=False))
+        return result, work, chunk
+
+    def test_forbidden_name_in_another_entities_mapped_range_is_allowed(self):
+        result, work, chunk = self.creature_name_submission()
+        self.assertEqual(result["saved"], chunk)
+        self.assertTrue((work / "chunks" / (chunk + ".txt")).is_file())
+
+    def test_forbidden_name_in_its_own_mapped_range_is_rejected(self):
+        with self.assertRaisesRegex(core.PipelineError, "creature-yual 出現本節禁用的譯名"):
+            self.creature_name_submission(wrong_yual_name=True)
+
+    def mokgan_name_submission(self, *, source_form, add_resolution=False, merge=False):
+        root = self.root / "mokgan-name-collision"
+        root.mkdir()
+        source = root / "韓文.txt"
+        reference = root / "人工版.txt"
+        source.write_text(f"<1화 同音詞區分測試 (1)>\n{source_form}\n", encoding="utf-8")
+        reference.write_text("目艮、木簡。", encoding="utf-8")
+        work = root / "translation-work"
+        core.init_project(argparse.Namespace(source=source, reference=reference, work=work, title="木簡同音測試",
+                                             source_encoding="auto", reference_encoding="auto", heading_pattern=None,
+                                             source_layout="inline"))
+        manifest = core.load_json(work / "manifest.json")
+        plan = core.build_batch_plan(manifest["sections"], manifest["source"]["sha256"],
+                                     target_chars=100, max_chars=6000, batch_chars=6000)
+        write_json(work / "batch-plan.json", plan)
+        terms = [
+            {"id": "title-mokgan", "ko": ["목간(目艮)", "목간"], "zh": "目艮", "decision": "adopted",
+             "basis": "source_hanja", "evidence": ["括號漢字區分同音專名"], "forbidden_zh": ["木簡"]},
+            {"id": "object-mokgan", "ko": ["목간(木簡)", "목간"], "zh": "木簡", "decision": "adopted",
+             "basis": "source_hanja", "evidence": ["原文括號漢字指木簡實物"], "forbidden_zh": []},
+        ]
+        write_rows(work / "terminology.jsonl", terms)
+        write_rows(work / "continuity.jsonl", [
+            {"section_id": section["id"], "summary": "木簡同音詞合成測試。", "facts": []}
+            for section in manifest["sections"]
+        ])
+        flow = chunk_workflow.Workflow(core, work)
+        chunk = flow.section_chunks(manifest["sections"][0]["id"])[0]
+        units = []
+        for block in flow.views[chunk]["blocks"]:
+            unit = {"source_ids": [block["id"]], "text": "木簡放在那裡。"}
+            if add_resolution:
+                unit["term_resolutions"] = [{"term_id": "title-mokgan", "forbidden_zh": "木簡",
+                                             "resolves_as": "object-mokgan", "reason": "合成測試中的木製簡牘語境。"}]
+            units.append(unit)
+        data = {"units": units, "reviews": synthetic_reviews(core.STAGES),
+                "state_after": {"viewpoint": "全知視角", "time_place": "合成場景", "speakers": [],
+                                "known_facts": [], "open_threads": []}}
+        input_path = root / "submit.json"
+        write_json(input_path, data)
+        result = chunk_workflow.run(core, argparse.Namespace(command="submit-chunk", work=work, chunk=chunk,
+                                   input=input_path, merge=merge,
+                                   title="第1章 同音詞區分測試（1）" if merge else None, replace=False))
+        return result, work, chunk
+
+    def test_parenthetical_hanja_selects_mokgan_object_translation(self):
+        result, work, chunk = self.mokgan_name_submission(source_form="목간(木簡)이 놓여 있었다.")
+        self.assertEqual(result["saved"], chunk)
+        self.assertTrue((work / "chunks" / (chunk + ".txt")).is_file())
+
+    def test_parenthetical_hanja_does_not_allow_title_forbidden_translation(self):
+        with self.assertRaisesRegex(core.PipelineError, "title-mokgan 出現本節禁用的譯名"):
+            self.mokgan_name_submission(source_form="목간(目艮)이 쓰러졌다.")
+
+    def test_bare_mokgan_object_requires_explicit_source_scoped_resolution(self):
+        result, work, chunk = self.mokgan_name_submission(
+            source_form="낡은 목간 하나와 서책이 들어있었다.", add_resolution=True)
+        self.assertEqual(result["saved"], chunk)
+        self.assertTrue((work / "chunks" / (chunk + ".txt")).is_file())
+
+    def test_bare_mokgan_without_resolution_is_rejected(self):
+        with self.assertRaisesRegex(core.PipelineError, "title-mokgan 出現本節禁用的譯名"):
+            self.mokgan_name_submission(source_form="낡은 목간 하나와 서책이 들어있었다.")
+
+    def test_resolution_cannot_override_explicit_title_hanja(self):
+        with self.assertRaisesRegex(core.PipelineError, "消歧依據與原文詞形不符"):
+            self.mokgan_name_submission(source_form="목간(目艮)이 쓰러졌다.", add_resolution=True)
+
+    def test_term_resolution_lines_are_rebased_during_section_merge(self):
+        result, work, _ = self.mokgan_name_submission(
+            source_form="낡은 목간 하나와 서책이 들어있었다.", add_resolution=True, merge=True)
+        self.assertIn("section", result)
+        section_id = result["section"]["merged"]
+        mapping = core.load_json(work / "sections" / (section_id + ".map.json"))
+        text = (work / "sections" / (section_id + ".txt")).read_text(encoding="utf-8").splitlines()
+        resolution = next(resolution for entry in mapping["alignments"]
+                          for resolution in entry.get("term_resolutions", []))
+        start, end = resolution["target_lines"]
+        self.assertEqual(start, end)
+        self.assertIn("木簡", text[start - 1])
+
     def test_changed_term_dependency_blocks_merge(self):
         self.save_section("s0001")
         self.terms[0]["evidence"].append("補充的合成依據")

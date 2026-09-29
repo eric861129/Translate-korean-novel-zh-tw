@@ -1,6 +1,6 @@
 # 舊平行草稿轉回單代理
 
-本文件只供曾啟用平行工作、仍有 `pipeline/` 的小說交接。日常採 **單一 Session、Luna Max**；同一 Session 完成初譯、查證、修訂、整節評分與交付。新書不建立佇列、不開子代理，也不讀本文件。舊 `parallel` 命令僅為保全進行中稿件及恢復中斷保存而保留；`init`、`claim`、`assist-request` 已停用。
+本文件只供曾啟用平行工作、仍有 `pipeline/` 的小說交接。日常採 **單一 Session、GPT-6 Luna，推理強度 Max**；同一 Session 完成初譯、查證、修訂、整節評分與交付。新書不建立佇列、不開子代理，也不讀本文件。舊 `parallel` 命令僅為保全進行中稿件及恢復中斷保存而保留；`init`、`claim`、`assist-request` 已停用。
 
 ## 在保存點交接一次
 
